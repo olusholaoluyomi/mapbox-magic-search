@@ -3,7 +3,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useMemo, useRef, useState } from "react";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
-import { searchLocations, reverseGeocode, type MapboxFeature } from "@/lib/mapbox.functions";
+import { searchLocations, reverseGeocode, type MapboxFeature, type ReverseContext } from "@/lib/mapbox.functions";
 import { Search, MapPin, Loader2 } from "lucide-react";
 
 export const Route = createFileRoute("/")({
@@ -45,6 +45,7 @@ function Index() {
     null,
   );
   const [country, setCountry] = useState<string | null>(null);
+  const [bbox, setBbox] = useState<{ minLng: number; minLat: number; maxLng: number; maxLat: number } | null>(null);
 
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
@@ -67,13 +68,18 @@ function Index() {
     );
   }, []);
 
-  // Reverse-geocode to detect user's country
+  // Reverse-geocode to detect user's country and region bbox
   useEffect(() => {
     if (!proximity) return;
     let cancelled = false;
     reverseGeocode({ data: proximity })
       .then((r) => {
-        if (!cancelled) setCountry(r.countryCode);
+        if (cancelled) return;
+        if (r.country) setCountry(r.country);
+        if (r.bbox) {
+          const [minLng, minLat, maxLng, maxLat] = r.bbox;
+          setBbox({ minLng, minLat, maxLng, maxLat });
+        }
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -117,6 +123,7 @@ function Index() {
         query: debouncedQuery,
         proximity: proximity ?? undefined,
         country: country ?? undefined,
+        bbox: bbox ?? undefined,
       },
     })
       .then((r) => {
@@ -132,7 +139,7 @@ function Index() {
     return () => {
       cancelled = true;
     };
-  }, [debouncedQuery, proximity, country, search]);
+  }, [debouncedQuery, proximity, country, bbox, search]);
 
   const handleSelect = (feature: MapboxFeature) => {
     setSelected(feature);
