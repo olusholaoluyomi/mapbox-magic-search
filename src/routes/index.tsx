@@ -1,8 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useMemo, useRef, useState } from "react";
-import mapboxgl from "mapbox-gl";
-import "mapbox-gl/dist/mapbox-gl.css";
 import { searchLocations, reverseGeocode, type MapboxFeature, type ReverseContext } from "@/lib/mapbox.functions";
 import { Search, MapPin, Loader2 } from "lucide-react";
 
@@ -48,8 +46,9 @@ function Index() {
   const [bbox, setBbox] = useState<{ minLng: number; minLat: number; maxLng: number; maxLat: number } | null>(null);
 
   const mapContainer = useRef<HTMLDivElement | null>(null);
-  const mapRef = useRef<mapboxgl.Map | null>(null);
-  const markerRef = useRef<mapboxgl.Marker | null>(null);
+  const mapRef = useRef<any>(null);
+  const markerRef = useRef<any>(null);
+  const mapboxRef = useRef<any>(null);
 
   const debouncedQuery = useDebounced(query, 200);
 
@@ -85,18 +84,29 @@ function Index() {
     return () => { cancelled = true; };
   }, [proximity]);
 
-  // Init map
+  // Init map (dynamic import to avoid SSR crash)
   useEffect(() => {
     if (!publicToken || !mapContainer.current || mapRef.current) return;
-    mapboxgl.accessToken = publicToken;
-    mapRef.current = new mapboxgl.Map({
-      container: mapContainer.current,
-      style: "mapbox://styles/mapbox/streets-v12",
-      center: [-74.006, 40.7128],
-      zoom: 10,
-    });
-    mapRef.current.addControl(new mapboxgl.NavigationControl(), "top-right");
+    let cancelled = false;
+
+    Promise.all([
+      import("mapbox-gl"),
+      import("mapbox-gl/dist/mapbox-gl.css"),
+    ]).then(([mapboxgl]) => {
+      if (cancelled || !mapContainer.current || mapRef.current) return;
+      mapboxRef.current = mapboxgl.default;
+      mapboxgl.default.accessToken = publicToken;
+      mapRef.current = new mapboxgl.default.Map({
+        container: mapContainer.current,
+        style: "mapbox://styles/mapbox/streets-v12",
+        center: [-74.006, 40.7128],
+        zoom: 10,
+      });
+      mapRef.current.addControl(new mapboxgl.default.NavigationControl(), "top-right");
+    }).catch(() => {});
+
     return () => {
+      cancelled = true;
       mapRef.current?.remove();
       mapRef.current = null;
     };
@@ -146,7 +156,8 @@ function Index() {
     setQuery(feature.place_name);
     setOpen(false);
     const map = mapRef.current;
-    if (!map) return;
+    const mapboxgl = mapboxRef.current;
+    if (!map || !mapboxgl) return;
     markerRef.current?.remove();
     markerRef.current = new mapboxgl.Marker({ color: "#ef4444" })
       .setLngLat(feature.center)
