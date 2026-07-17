@@ -57,26 +57,33 @@ type OsmFeature = {
 export const searchLocations = createServerFn({ method: "GET" })
   .validator((data: unknown) => searchSchema.parse(data))
   .handler(async ({ data }): Promise<MapboxFeature[]> => {
-    const mapboxKey = getMapboxKey();
-
-    const [mapboxResults, osmResults] = await Promise.all([
-      searchMapbox(mapboxKey, data.query, data.proximity, data.country, data.bbox),
-      searchOpenStreetMap(data.query, data.country, data.proximity),
-    ]);
-
-    let all = [...mapboxResults, ...osmResults];
-    let ranked = rankAndDedupe(all, data.query, data.proximity);
-
-    if (ranked.length < 3 && data.query.trim().length >= 3) {
-      const [relaxedMapbox, relaxedOsm] = await Promise.all([
-        searchMapbox(mapboxKey, data.query, data.proximity),
-        searchOpenStreetMap(data.query, undefined, data.proximity),
-      ]);
-      const relaxedAll = [...relaxedMapbox, ...relaxedOsm, ...all];
-      ranked = rankAndDedupe(relaxedAll, data.query, data.proximity);
+    let mapboxKey: string;
+    try {
+      mapboxKey = getMapboxKey();
+    } catch {
+      console.error("MAPBOX_API_KEY not set, falling back to OSM only");
+      return rankAndDedupe(
+        await searchOpenStreetMap(data.query, data.country, data.proximity),
+        data.query,
+        data.proximity,
+      ).slice(0, 10);
     }
 
-    return ranked.slice(0, 10);
+    const [mapboxResults, osmResults] = await Promise.all([
+      searchMapbox(mapboxKey, data.query, data.proximity, data.country, data.bbox).catch(
+        (e) => {
+          console.error("Mapbox search error:", e);
+          return [] as MapboxFeature[];
+        },
+      ),
+      searchOpenStreetMap(data.query, data.country, data.proximity).catch((e) => {
+        console.error("OSM search error:", e);
+        return [] as MapboxFeature[];
+      }),
+    ]);
+
+    const all = [...mapboxResults, ...osmResults];
+    return rankAndDedupe(all, data.query, data.proximity).slice(0, 10);
   });
 
 async function searchMapbox(
