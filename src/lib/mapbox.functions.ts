@@ -8,6 +8,8 @@ const searchSchema = z.object({
   proximity: z
     .object({ lng: z.number(), lat: z.number() })
     .optional(),
+  country: z.string().optional(),
+  bbox: z.string().optional(),
 });
 
 export type MapboxFeature = {
@@ -34,6 +36,12 @@ export const searchLocations = createServerFn({ method: "GET" })
     });
     if (data.proximity) {
       params.set("proximity", `${data.proximity.lng},${data.proximity.lat}`);
+    }
+    if (data.country) {
+      params.set("country", data.country);
+    }
+    if (data.bbox) {
+      params.set("bbox", data.bbox);
     }
 
     const encoded = encodeURIComponent(data.query);
@@ -64,4 +72,55 @@ export const searchLocations = createServerFn({ method: "GET" })
       center: f.center,
       category: f.properties?.category,
     }));
+  });
+
+const reverseGeocodeSchema = z.object({
+  lng: z.number(),
+  lat: z.number(),
+});
+
+export type ReverseGeocodeResult = {
+  countryCode: string | null;
+  countryName: string | null;
+};
+
+export const reverseGeocode = createServerFn({ method: "GET" })
+  .inputValidator((data: unknown) => reverseGeocodeSchema.parse(data))
+  .handler(async ({ data }): Promise<ReverseGeocodeResult> => {
+    const mapboxKey = process.env.MAPBOX_API_KEY;
+    if (!mapboxKey) {
+      throw new Error("Mapbox credentials are not configured");
+    }
+
+    const params = new URLSearchParams({
+      access_token: mapboxKey,
+      types: "country,region",
+    });
+
+    const url = `${MAPBOX_API_URL}/${data.lng},${data.lat}.json?${params.toString()}`;
+
+    const res = await fetch(url);
+
+    if (!res.ok) {
+      const body = await res.text();
+      console.error(`Reverse geocode failed [${res.status}]: ${body}`);
+      throw new Error(`Reverse geocode failed [${res.status}]`);
+    }
+
+    const json = (await res.json()) as {
+      features: Array<{
+        id: string;
+        text: string;
+        properties: { short_code?: string };
+      }>;
+    };
+
+    const countryFeature = json.features.find(
+      (f) => f.id.startsWith("country"),
+    );
+
+    return {
+      countryCode: countryFeature?.properties?.short_code?.toUpperCase() ?? null,
+      countryName: countryFeature?.text ?? null,
+    };
   });

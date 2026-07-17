@@ -3,7 +3,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useMemo, useRef, useState } from "react";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
-import { searchLocations, type MapboxFeature } from "@/lib/mapbox.functions";
+import { searchLocations, reverseGeocode, type MapboxFeature } from "@/lib/mapbox.functions";
 import { Search, MapPin, Loader2 } from "lucide-react";
 
 export const Route = createFileRoute("/")({
@@ -44,6 +44,7 @@ function Index() {
   const [proximity, setProximity] = useState<{ lng: number; lat: number } | null>(
     null,
   );
+  const [country, setCountry] = useState<string | null>(null);
 
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
@@ -65,6 +66,18 @@ function Index() {
       { timeout: 4000 },
     );
   }, []);
+
+  // Reverse-geocode to detect user's country
+  useEffect(() => {
+    if (!proximity) return;
+    let cancelled = false;
+    reverseGeocode({ data: proximity })
+      .then((r) => {
+        if (!cancelled) setCountry(r.countryCode);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [proximity]);
 
   // Init map
   useEffect(() => {
@@ -103,6 +116,7 @@ function Index() {
       data: {
         query: debouncedQuery,
         proximity: proximity ?? undefined,
+        country: country ?? undefined,
       },
     })
       .then((r) => {
@@ -118,7 +132,7 @@ function Index() {
     return () => {
       cancelled = true;
     };
-  }, [debouncedQuery, proximity, search]);
+  }, [debouncedQuery, proximity, country, search]);
 
   const handleSelect = (feature: MapboxFeature) => {
     setSelected(feature);
