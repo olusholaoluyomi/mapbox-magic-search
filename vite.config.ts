@@ -7,7 +7,4 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [tailwindcss(), tsConfigPaths(), tanstackStart(), nitro(), react()],
-  tanstackStart: {
-    server: { entry: "server" },
-  },
 });
