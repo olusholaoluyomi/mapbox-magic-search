@@ -6,5 +6,11 @@ import { nitro } from "nitro/vite";
 import react from "@vitejs/plugin-react";
 
 export default defineConfig({
-  plugins: [tailwindcss(), tsConfigPaths(), tanstackStart(), nitro(), react()],
+  plugins: [
+    tailwindcss(),
+    tsConfigPaths(),
+    tanstackStart(),
+    nitro({ preset: "vercel" }),
+    react(),
+  ],
 });
