@@ -42,16 +42,21 @@ type RawMapboxFeature = {
   properties?: { category?: string };
 };
 
-type OsmFeature = {
-  place_id: number;
-  osm_type: string;
-  osm_id: number;
-  lat: string;
-  lon: string;
-  category?: string;
-  type?: string;
-  name?: string;
-  display_name: string;
+type PhotonFeature = {
+  geometry: { coordinates: [number, number] };
+  properties: {
+    osm_id?: number;
+    osm_type?: string;
+    osm_key?: string;
+    osm_value?: string;
+    name?: string;
+    city?: string;
+    state?: string;
+    country?: string;
+    countrycode?: string;
+    street?: string;
+    housenumber?: string;
+  };
 };
 
 export const searchLocations = createServerFn({ method: "GET" })
@@ -61,28 +66,28 @@ export const searchLocations = createServerFn({ method: "GET" })
     try {
       mapboxKey = getMapboxKey();
     } catch {
-      console.error("MAPBOX_API_KEY not set, falling back to OSM only");
+      console.error("MAPBOX_API_KEY not set, falling back to Photon only");
       return rankAndDedupe(
-        await searchOpenStreetMap(data.query, data.country, data.proximity),
+        await searchPhoton(data.query, data.country, data.proximity),
         data.query,
         data.proximity,
       ).slice(0, 10);
     }
 
-    const [mapboxResults, osmResults] = await Promise.all([
+    const [mapboxResults, photonResults] = await Promise.all([
       searchMapbox(mapboxKey, data.query, data.proximity, data.country, data.bbox).catch(
         (e) => {
           console.error("Mapbox search error:", e);
           return [] as MapboxFeature[];
         },
       ),
-      searchOpenStreetMap(data.query, data.country, data.proximity).catch((e) => {
-        console.error("OSM search error:", e);
+      searchPhoton(data.query, data.country, data.proximity).catch((e) => {
+        console.error("Photon search error:", e);
         return [] as MapboxFeature[];
       }),
     ]);
 
-    const all = [...mapboxResults, ...osmResults];
+    const all = [...mapboxResults, ...photonResults];
     return rankAndDedupe(all, data.query, data.proximity).slice(0, 10);
   });
 
@@ -130,55 +135,70 @@ async function searchMapbox(
   }));
 }
 
-async function searchOpenStreetMap(
+async function searchPhoton(
   query: string,
   country?: string,
   proximity?: { lng: number; lat: number },
 ): Promise<MapboxFeature[]> {
   const params = new URLSearchParams({
     q: query,
-    format: "jsonv2",
     limit: "10",
-    addressdetails: "1",
+    lang: "en",
   });
 
   if (country) {
-    params.set("countrycodes", country.toLowerCase());
+    params.set("countrycode", country.toLowerCase());
   }
 
   if (proximity) {
-    const delta = 0.75;
-    params.set(
-      "viewbox",
-      `${proximity.lng - delta},${proximity.lat + delta},${proximity.lng + delta},${
-        proximity.lat - delta
-      }`,
-    );
+    params.set("lat", String(proximity.lat));
+    params.set("lon", String(proximity.lng));
   }
 
-  const res = await fetch(`https://nominatim.openstreetmap.org/search?${params}`, {
+  const res = await fetch(`https://photon.komoot.io/api/?${params}`, {
     headers: {
       Accept: "application/json",
-      "Accept-Language": "en",
       "User-Agent": "MapSearchMagic/1.0",
     },
   });
 
   if (!res.ok) {
     const body = await res.text();
-    console.error(`OpenStreetMap search failed [${res.status}]: ${body}`);
+    console.error(`Photon search failed [${res.status}]: ${body}`);
     return [];
   }
 
-  const json = (await res.json()) as OsmFeature[];
-  return json
-    .map((f) => ({
-      id: `osm.${f.osm_type}.${f.osm_id || f.place_id}`,
-      name: f.name || f.display_name.split(",")[0]?.trim() || f.display_name,
-      place_name: f.display_name,
-      center: [Number(f.lon), Number(f.lat)] as [number, number],
-      category: [f.category, f.type].filter(Boolean).join(" · ") || undefined,
-    }))
+  const json = (await res.json()) as { features: PhotonFeature[] };
+  const wantedCountry = country?.toLowerCase();
+
+  return json.features
+    .filter((f) => {
+      if (!wantedCountry) return true;
+      const cc = f.properties.countrycode?.toLowerCase();
+      return cc === wantedCountry;
+    })
+    .map((f) => {
+      const p = f.properties;
+      const name =
+        p.name ||
+        [p.housenumber, p.street].filter(Boolean).join(" ") ||
+        p.city ||
+        p.state ||
+        p.country ||
+        "Unknown";
+      const context = [p.street, p.city, p.state, p.country]
+        .filter(Boolean)
+        .join(", ");
+      const place_name = context ? `${name}, ${context}` : name;
+      return {
+        id: `photon.${p.osm_type ?? "n"}.${p.osm_id ?? Math.random()}`,
+        name,
+        place_name,
+        center: f.geometry.coordinates,
+        category:
+          [p.osm_key, p.osm_value].filter(Boolean).join(" · ") || undefined,
+      } as MapboxFeature;
+    })
     .filter((f) => Number.isFinite(f.center[0]) && Number.isFinite(f.center[1]));
 }
 
