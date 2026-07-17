@@ -59,53 +59,69 @@ export const searchLocations = createServerFn({ method: "GET" })
   .handler(async ({ data }): Promise<MapboxFeature[]> => {
     const mapboxKey = getMapboxKey();
 
-    const params = new URLSearchParams({
-      access_token: mapboxKey,
-      autocomplete: "true",
-      limit: "10",
-      types: "poi,address,place,locality,neighborhood",
-    });
-    if (data.proximity) {
-      params.set("proximity", `${data.proximity.lng},${data.proximity.lat}`);
-    }
-    if (data.country) {
-      params.set("country", data.country.toLowerCase());
-    }
-    if (data.bbox) {
-      params.set(
-        "bbox",
-        `${data.bbox.minLng},${data.bbox.minLat},${data.bbox.maxLng},${data.bbox.maxLat}`,
-      );
+    const [mapboxResults, osmResults] = await Promise.all([
+      searchMapbox(mapboxKey, data.query, data.proximity, data.country, data.bbox),
+      searchOpenStreetMap(data.query, data.country, data.proximity),
+    ]);
+
+    let all = [...mapboxResults, ...osmResults];
+    let ranked = rankAndDedupe(all, data.query, data.proximity);
+
+    if (ranked.length < 3 && data.query.trim().length >= 3) {
+      const [relaxedMapbox, relaxedOsm] = await Promise.all([
+        searchMapbox(mapboxKey, data.query, data.proximity),
+        searchOpenStreetMap(data.query, undefined, data.proximity),
+      ]);
+      const relaxedAll = [...relaxedMapbox, ...relaxedOsm, ...all];
+      ranked = rankAndDedupe(relaxedAll, data.query, data.proximity);
     }
 
-    const encoded = encodeURIComponent(data.query);
-    const url = `${MAPBOX_API_URL}/${encoded}.json?${params.toString()}`;
-
-    const mapboxPromise = fetch(url).then(async (res) => {
-      if (!res.ok) {
-        const body = await res.text();
-        console.error(`Mapbox search failed [${res.status}]: ${body}`);
-        return [] as MapboxFeature[];
-      }
-      const json = (await res.json()) as { features: RawMapboxFeature[] };
-      return json.features.map((f) => ({
-        id: f.id,
-        name: f.text,
-        place_name: f.place_name,
-        center: f.center,
-        category: f.properties?.category,
-      }));
-    });
-
-    const osmPromise = searchOpenStreetMap(data.query, data.country, data.proximity);
-
-    const [mapboxResults, osmResults] = await Promise.all([mapboxPromise, osmPromise]);
-
-    const all = [...mapboxResults, ...osmResults];
-    if (all.length === 0) return [];
-
-    return rankAndDedupe(all, data.query, data.proximity).slice(0, 10);
+    return ranked.slice(0, 10);
   });
+
+async function searchMapbox(
+  key: string,
+  query: string,
+  proximity?: { lng: number; lat: number },
+  country?: string,
+  bbox?: { minLng: number; minLat: number; maxLng: number; maxLat: number },
+): Promise<MapboxFeature[]> {
+  const params = new URLSearchParams({
+    access_token: key,
+    autocomplete: "true",
+    fuzzyMatch: "true",
+    limit: "10",
+    types: "poi,address,place,locality,neighborhood",
+  });
+  if (proximity) {
+    params.set("proximity", `${proximity.lng},${proximity.lat}`);
+  }
+  if (country) {
+    params.set("country", country.toLowerCase());
+  }
+  if (bbox) {
+    params.set("bbox", `${bbox.minLng},${bbox.minLat},${bbox.maxLng},${bbox.maxLat}`);
+  }
+
+  const encoded = encodeURIComponent(query);
+  const url = `${MAPBOX_API_URL}/${encoded}.json?${params.toString()}`;
+
+  const res = await fetch(url);
+  if (!res.ok) {
+    const body = await res.text();
+    console.error(`Mapbox search failed [${res.status}]: ${body}`);
+    return [];
+  }
+
+  const json = (await res.json()) as { features: RawMapboxFeature[] };
+  return json.features.map((f) => ({
+    id: f.id,
+    name: f.text,
+    place_name: f.place_name,
+    center: f.center,
+    category: f.properties?.category,
+  }));
+}
 
 async function searchOpenStreetMap(
   query: string,
@@ -217,16 +233,17 @@ function scoreResult(result: MapboxFeature, query: string) {
   const tokens = tokenize(query);
 
   if (name === normalizedQuery) return 8;
-  if (name.includes(normalizedQuery)) return 7;
-  if (place.includes(normalizedQuery)) return 6;
-  if (tokens.length > 1 && tokens.every((token) => place.includes(token))) return 5;
-  if (tokens.some((token) => name.includes(token))) return 4;
-  if (tokens.some((token) => place.includes(token))) return 3;
+  if (name.startsWith(normalizedQuery)) return 7;
+  if (name.includes(normalizedQuery)) return 6;
+  if (place.includes(normalizedQuery)) return 5;
+  if (tokens.length > 1 && tokens.every((token) => place.includes(token))) return 4;
+  if (tokens.some((token) => name.startsWith(token))) return 3;
+  if (tokens.some((token) => place.includes(token))) return 2;
 
   const nameRatio = levenshteinRatio(normalizedQuery, name);
   const placeRatio = levenshteinRatio(normalizedQuery, place);
-  if (nameRatio >= 0.7) return 2;
-  if (placeRatio >= 0.6) return 1;
+  if (nameRatio >= 0.65) return 2;
+  if (placeRatio >= 0.5) return 1;
 
   return 0;
 }
