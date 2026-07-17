@@ -81,36 +81,30 @@ export const searchLocations = createServerFn({ method: "GET" })
     const encoded = encodeURIComponent(data.query);
     const url = `${MAPBOX_API_URL}/${encoded}.json?${params.toString()}`;
 
-    const res = await fetch(url);
+    const mapboxPromise = fetch(url).then(async (res) => {
+      if (!res.ok) {
+        const body = await res.text();
+        console.error(`Mapbox search failed [${res.status}]: ${body}`);
+        return [] as MapboxFeature[];
+      }
+      const json = (await res.json()) as { features: RawMapboxFeature[] };
+      return json.features.map((f) => ({
+        id: f.id,
+        name: f.text,
+        place_name: f.place_name,
+        center: f.center,
+        category: f.properties?.category,
+      }));
+    });
 
-    if (!res.ok) {
-      const body = await res.text();
-      console.error(`Mapbox search failed [${res.status}]: ${body}`);
-      throw new Error(`Mapbox search failed [${res.status}]`);
-    }
+    const osmPromise = searchOpenStreetMap(data.query, data.country, data.proximity);
 
-    const json = (await res.json()) as { features: RawMapboxFeature[] };
+    const [mapboxResults, osmResults] = await Promise.all([mapboxPromise, osmPromise]);
 
-    const mapboxResults = json.features.map((f) => ({
-      id: f.id,
-      name: f.text,
-      place_name: f.place_name,
-      center: f.center,
-      category: f.properties?.category,
-    }));
+    const all = [...mapboxResults, ...osmResults];
+    if (all.length === 0) return [];
 
-    const shouldUseFallback =
-      data.query.trim().length >= 3 && !hasUsefulResult(mapboxResults, data.query);
-
-    if (!shouldUseFallback) {
-      return mapboxResults;
-    }
-
-    const osmResults = await searchOpenStreetMap(data.query, data.country, data.proximity);
-    return rankAndDedupe([...osmResults, ...mapboxResults], data.query, data.proximity).slice(
-      0,
-      10,
-    );
+    return rankAndDedupe(all, data.query, data.proximity).slice(0, 10);
   });
 
 async function searchOpenStreetMap(
@@ -165,17 +159,31 @@ async function searchOpenStreetMap(
     .filter((f) => Number.isFinite(f.center[0]) && Number.isFinite(f.center[1]));
 }
 
-function hasUsefulResult(results: MapboxFeature[], query: string) {
-  const tokens = tokenize(query);
-  if (tokens.length === 0) return false;
+function levenshteinRatio(a: string, b: string): number {
+  if (a === b) return 1;
+  if (a.length === 0 || b.length === 0) return 0;
 
-  return results.some((result) => {
-    const searchable = normalize(`${result.name} ${result.place_name}`);
-    if (tokens.length === 1) {
-      return searchable.includes(tokens[0]);
+  const rows = a.length + 1;
+  const cols = b.length + 1;
+  const d: number[] = new Array(cols);
+
+  for (let j = 0; j < cols; j++) d[j] = j;
+
+  for (let i = 1; i < rows; i++) {
+    let prev = d[0];
+    d[0] = i;
+    for (let j = 1; j < cols; j++) {
+      const temp = d[j];
+      d[j] =
+        a[i - 1] === b[j - 1]
+          ? prev
+          : 1 + Math.min(prev, d[j], d[j - 1]);
+      prev = temp;
     }
-    return tokens.every((token) => searchable.includes(token));
-  });
+  }
+
+  const maxLen = Math.max(a.length, b.length);
+  return 1 - d[cols - 1] / maxLen;
 }
 
 function rankAndDedupe(
@@ -197,6 +205,7 @@ function rankAndDedupe(
       seen.add(key);
       return true;
     })
+    .filter(({ score }) => score > 0)
     .sort((a, b) => b.score - a.score || a.distance - b.distance || a.index - b.index)
     .map(({ result }) => result);
 }
@@ -207,12 +216,18 @@ function scoreResult(result: MapboxFeature, query: string) {
   const place = normalize(result.place_name);
   const tokens = tokenize(query);
 
-  if (name === normalizedQuery) return 6;
-  if (name.includes(normalizedQuery)) return 5;
-  if (place.includes(normalizedQuery)) return 4;
-  if (tokens.length > 1 && tokens.every((token) => place.includes(token))) return 3;
-  if (tokens.some((token) => name.includes(token))) return 2;
-  if (tokens.some((token) => place.includes(token))) return 1;
+  if (name === normalizedQuery) return 8;
+  if (name.includes(normalizedQuery)) return 7;
+  if (place.includes(normalizedQuery)) return 6;
+  if (tokens.length > 1 && tokens.every((token) => place.includes(token))) return 5;
+  if (tokens.some((token) => name.includes(token))) return 4;
+  if (tokens.some((token) => place.includes(token))) return 3;
+
+  const nameRatio = levenshteinRatio(normalizedQuery, name);
+  const placeRatio = levenshteinRatio(normalizedQuery, place);
+  if (nameRatio >= 0.7) return 2;
+  if (placeRatio >= 0.6) return 1;
+
   return 0;
 }
 
