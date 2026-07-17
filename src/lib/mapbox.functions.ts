@@ -55,7 +55,7 @@ type OsmFeature = {
 };
 
 export const searchLocations = createServerFn({ method: "GET" })
-  .inputValidator((data: unknown) => searchSchema.parse(data))
+  .validator((data: unknown) => searchSchema.parse(data))
   .handler(async ({ data }): Promise<MapboxFeature[]> => {
     const mapboxKey = getMapboxKey();
 
@@ -253,7 +253,7 @@ export type ReverseContext = {
 };
 
 export const reverseGeocode = createServerFn({ method: "GET" })
-  .inputValidator((data: unknown) => reverseSchema.parse(data))
+  .validator((data: unknown) => reverseSchema.parse(data))
   .handler(async ({ data }): Promise<ReverseContext> => {
     const mapboxKey = getMapboxKey();
 
